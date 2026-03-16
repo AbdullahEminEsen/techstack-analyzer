@@ -1,0 +1,95 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #ffffff;
+  --bg2: #f6f6f4;
+  --bg3: #efefed;
+  --text: #1a1a18;
+  --text2: #6b6b67;
+  --text3: #9a9a95;
+  --border: rgba(0,0,0,0.10);
+  --border2: rgba(0,0,0,0.18);
+  --purple-bg: #EEEDFE;
+  --purple-text: #3C3489;
+  --purple-border: #AFA9EC;
+  --teal-bg: #E1F5EE;
+  --teal-text: #085041;
+  --teal-border: #5DCAA5;
+  --amber-bg: #FAEEDA;
+  --amber-text: #633806;
+  --amber-border: #EF9F27;
+  --blue-bg: #E6F1FB;
+  --blue-text: #0C447C;
+  --blue-border: #85B7EB;
+  --green-bg: #EAF3DE;
+  --green-text: #27500A;
+  --green-border: #97C459;
+  --radius: 8px;
+  --radius-lg: 12px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1c1c1a;
+    --bg2: #252523;
+    --bg3: #2e2e2b;
+    --text: #e8e8e2;
+    --text2: #a0a09a;
+    --text3: #6b6b67;
+    --border: rgba(255,255,255,0.10);
+    --border2: rgba(255,255,255,0.18);
+    --purple-bg: #26215C;
+    --purple-text: #CECBF6;
+    --purple-border: #534AB7;
+    --teal-bg: #04342C;
+    --teal-text: #9FE1CB;
+    --teal-border: #0F6E56;
+    --amber-bg: #412402;
+    --amber-text: #FAC775;
+    --amber-border: #854F0B;
+    --blue-bg: #042C53;
+    --blue-text: #B5D4F4;
+    --blue-border: #185FA5;
+    --green-bg: #173404;
+    --green-text: #C0DD97;
+    --green-border: #3B6D11;
+  }
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: var(--bg3);
+  color: var(--text);
+  min-height: 100vh;
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+input[type="text"] {
+  width: 100%;
+  padding: 10px 14px;
+  border: 0.5px solid var(--border2);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 15px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+input[type="text"]:focus {
+  border-color: var(--text3);
+  box-shadow: 0 0 0 3px rgba(0,0,0,0.05);
+}
+
+button {
+  cursor: pointer;
+  border: none;
+  border-radius: var(--radius);
+  font-size: 14px;
+  font-weight: 500;
+  transition: opacity 0.15s, transform 0.1s;
+}
+
+button:active { transform: scale(0.98); }
+button:disabled { opacity: 0.45; cursor: not-allowed; }
