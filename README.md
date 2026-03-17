@@ -1,113 +1,128 @@
 # Tech Stack Analyzer
 
-Bir web sitesinin teknoloji altyapısını analiz eden araç. Next.js + Claude API ile yapılmış.
+Herhangi bir web sitesinin teknoloji altyapısını saniyeler içinde tespit eden AI destekli araç.
+
+**[Demo →](https://techstack-analyzer.vercel.app)**
 
 ---
 
-## Kurulum (Lokal)
+## Nasıl çalışır?
 
-### 1. Gereksinimler
-- Node.js 18+ (https://nodejs.org)
-- Anthropic API key (https://console.anthropic.com)
+```
+Kullanıcı URL girer
+       ↓
+Next.js API Route (sunucu tarafında)
+       ↓
+Hedef siteye fetch atar (HTML + HTTP headers)
+       ↓
+Claude API ile analiz eder
+       ↓
+Frontend / Backend / Hosting teknolojilerini döner
+```
 
-### 2. Projeyi indir ve kur
+Tarayıcıdan direkt fetch atılmadığı için CORS sorunu yoktur. Tüm işlem Next.js'in API Route'u üzerinden sunucu tarafında gerçekleşir.
+
+### Tespit edilen sinyaller
+- `<meta name="generator">` tagları
+- Script `src` adresleri (React, Vue, Angular, jQuery...)
+- CSS class isimleri (Tailwind, Bootstrap...)
+- HTTP header'ları (`X-Powered-By`, `Server`, `Via`, `CF-Ray`...)
+- URL kalıpları (`_next/`, `wp-content/`, `__nuxt/`...)
+- Sayfa altındaki "Powered by" ibareleri
+
+---
+
+## Kurulum
+
+### Gereksinimler
+- Node.js 18+
+- Anthropic API key → [console.anthropic.com](https://console.anthropic.com)
+
+### Lokal çalıştırma
 
 ```bash
-# Bağımlılıkları yükle
+git clone https://github.com/kullanici/techstack-analyzer
+cd techstack-analyzer
+
 npm install
 
-# .env.example dosyasını kopyala
 cp .env.example .env.local
-```
+# .env.local dosyasını aç, ANTHROPIC_API_KEY değerini gir
 
-### 3. API key'ini ekle
-
-`.env.local` dosyasını aç ve kendi API key'ini yaz:
-
-```
-ANTHROPIC_API_KEY=sk-ant-api03-...
-```
-
-API key'ini şuradan alabilirsin: https://console.anthropic.com/settings/keys
-
-### 4. Başlat
-
-```bash
 npm run dev
+# → http://localhost:3000
 ```
-
-Tarayıcıda http://localhost:3000 aç.
 
 ---
 
-## Vercel'e Deploy
+## Vercel Deploy
 
-### Adım 1 — GitHub'a yükle
+### 1. GitHub'a yükle
 
 ```bash
 git init
 git add .
-git commit -m "ilk commit"
-```
-
-GitHub'da yeni bir repo oluştur (https://github.com/new), sonra:
-
-```bash
-git remote add origin https://github.com/KULLANICI_ADIN/techstack-analyzer.git
+git commit -m "Initial commit"
+git remote add origin https://github.com/KULLANICI/techstack-analyzer.git
 git push -u origin main
 ```
 
-### Adım 2 — Vercel'e bağla
+### 2. Vercel'e bağla
 
-1. https://vercel.com adresine git
-2. "Add New Project" → GitHub reposunu seç
-3. "Deploy" butonuna tıkla
+[vercel.com](https://vercel.com) → **Add New Project** → GitHub reposunu seç → **Deploy**
 
-### Adım 3 — API key ekle
+### 3. API key ekle
 
-Deploy bittikten sonra:
-1. Vercel dashboard'da projeye tıkla
-2. **Settings** → **Environment Variables**
-3. Şunu ekle:
-   - Key: `ANTHROPIC_API_KEY`
-   - Value: `sk-ant-api03-...` (kendi key'in)
-4. **Save** ve **Redeploy** yap
+Vercel dashboard → **Settings** → **Environment Variables**
+
+| Key | Value |
+|-----|-------|
+| `ANTHROPIC_API_KEY` | `sk-ant-...` |
+
+Kaydet → **Deployments** → **Redeploy**
 
 ---
 
-## Proje Yapısı
+## Proje yapısı
 
 ```
-techstack-analyzer/
-├── app/
-│   ├── page.tsx              ← Ana sayfa (kullanıcı arayüzü)
-│   ├── page.module.css       ← Stiller
-│   ├── layout.tsx            ← HTML layout
-│   ├── globals.css           ← Global CSS değişkenleri
-│   └── api/
-│       └── analyze/
-│           └── route.ts      ← Backend (siteyi fetch + Claude analizi)
-├── .env.local                ← API key (git'e ekleme!)
-├── .env.example              ← Örnek env dosyası
-└── package.json
+app/
+├── page.tsx                 ← Kullanıcı arayüzü (React)
+├── page.module.css          ← Stiller
+├── layout.tsx               ← HTML layout
+├── globals.css              ← Tema değişkenleri (light/dark)
+└── api/
+    └── analyze/
+        └── route.ts         ← Backend: fetch + Claude analizi
 ```
 
-## Nasıl Çalışır
+### `route.ts` ne yapar?
 
-1. Kullanıcı URL girer
-2. Frontend `/api/analyze` endpoint'ine POST atar
-3. Backend (Next.js API Route):
-   - Hedef siteye fetch atar (CORS sorunu yok çünkü sunucu tarafında)
-   - HTML'in ilk 30KB'ını ve HTTP header'larını alır
-   - Claude API'ye gönderir
-   - Claude teknolojileri tespit eder ve JSON döner
-4. Frontend sonuçları gösterir
+```ts
+// 1. Hedef siteyi fetch et (sunucu tarafında, CORS yok)
+const res = await fetch(targetUrl, { ... });
+const html = await res.text(); // ilk 30KB yeterli
 
-## Özellikler
+// 2. Claude'a gönder
+const message = await client.messages.create({
+  model: "claude-haiku-4-5-20251001",
+  messages: [{ role: "user", content: prompt }],
+});
 
-- Frontend/Backend/Hosting tespiti
-- Tespit güven skoru
-- Hangi sinyallerin bulunduğu
-- Türkçe açıklama
-- Karanlık mod desteği
-- Hızlı örnek URL'ler
+// 3. JSON parse et ve döndür
+return NextResponse.json(parsed);
+```
+
+---
+
+## Teknoloji
+
+- **[Next.js](https://nextjs.org)** — Frontend + API Routes
+- **[Claude API](https://anthropic.com)** — Teknoloji tespiti (Haiku modeli)
+- **[Vercel](https://vercel.com)** — Hosting
+
+---
+
+## Lisans
+
+MIT
