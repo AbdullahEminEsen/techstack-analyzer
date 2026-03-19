@@ -21,7 +21,7 @@ type HistoryItem = {
   analyzedAt: number;
 };
 
-const EXAMPLES = ["vercel.com", "shopify.com", "naryayinlari.com", "wordpress.org"];
+const EXAMPLES = ["vercel.com", "shopify.com", "wordpress.org", "github.com"];
 const LOADING_MESSAGES = [
   "Siteye bağlanılıyor...",
   "HTTP başlıkları okunuyor...",
@@ -56,11 +56,20 @@ export default function Home() {
     } catch {}
   }, []);
 
-  // Read ?q= from URL on mount
+  // Read ?q= and ?q2= from URL on mount
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const q = params.get("q");
-    if (q) { setUrl(q); analyze(q); }
+    const q2 = params.get("q2");
+    if (q && q2) {
+      setUrl(q);
+      setUrl2(q2);
+      setMode("compare");
+      setTimeout(() => analyzeCompare(), 0);
+    } else if (q) {
+      setUrl(q);
+      analyze(q);
+    }
   }, []);
 
   function saveHistory(u: string, r: Result) {
@@ -123,6 +132,7 @@ export default function Home() {
       // Update share URL
       const u = new URL(window.location.href);
       u.searchParams.set("q", target);
+      u.searchParams.delete("q2");
       window.history.replaceState({}, "", u.toString());
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Bilinmeyen hata");
@@ -192,6 +202,7 @@ export default function Home() {
   async function copyShareLink() {
     const u = new URL(window.location.href);
     if (url) u.searchParams.set("q", url.trim());
+    if (mode === "compare" && url2) u.searchParams.set("q2", url2.trim());
     await navigator.clipboard.writeText(u.toString());
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
