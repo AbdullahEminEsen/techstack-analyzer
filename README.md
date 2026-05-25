@@ -103,7 +103,7 @@ app/
 const res = await fetch(targetUrl, { ... });
 const html = await res.text(); // ilk 30KB yeterli
 
-// 2. Claude'a gönder
+// 2. Claude'a gönder.
 const message = await client.messages.create({
   model: "claude-haiku-4-5-20251001",
   messages: [{ role: "user", content: prompt }],
