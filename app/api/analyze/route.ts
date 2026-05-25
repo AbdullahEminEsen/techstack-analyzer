@@ -1,112 +1,240 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
+import { createHash, randomUUID } from "crypto";
+import { supabaseAdmin } from "@/lib/supabase";
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
 
-export async function POST(req: NextRequest) {
-  const { url } = await req.json();
+const MODEL = "claude-sonnet-4-6";
+const COOKIE_NAME = "ts_device_id";
+const HTML_LIMIT = 60_000;
 
-  if (!url) {
-    return NextResponse.json({ error: "URL gerekli" }, { status: 400 });
-  }
+// Gunluk tum kullanicilar icin toplam YENI analiz tavani (cache hit sayilmaz).
+// .env'den ayarlanabilir; yoksa 100.
+const DAILY_LIMIT = Number(process.env.DAILY_ANALYSIS_LIMIT ?? 100);
 
-  // Normalize URL
-  let targetUrl = url.trim();
-  if (!/^https?:\/\//i.test(targetUrl)) targetUrl = "https://" + targetUrl;
-
-  // 1. Fetch the target site's HTML (from our server — no CORS issues)
-  let siteHtml = "";
-  let siteHeaders: Record<string, string> = {};
-
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000);
-    const res = await fetch(targetUrl, {
-      headers: { "User-Agent": "Mozilla/5.0 (compatible; TechStackBot/1.0)" },
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-
-    // Collect response headers
-    res.headers.forEach((val, key) => { siteHeaders[key] = val; });
-
-    // Read first 30KB of HTML (enough for <head>)
-    const reader = res.body?.getReader();
-    const chunks: Uint8Array[] = [];
-    let totalBytes = 0;
-    if (reader) {
-      while (totalBytes < 30000) {
-        const { done, value } = await reader.read();
-        if (done || !value) break;
-        chunks.push(value);
-        totalBytes += value.byteLength;
-      }
-      reader.cancel();
-    }
-    siteHtml = new TextDecoder().decode(
-      new Uint8Array(chunks.reduce<number[]>((acc, c) => [...acc, ...c], []))
-    ).slice(0, 30000);
-  } catch {
-    siteHtml = "(Siteye erişilemedi — sadece URL ve domain bilgisiyle analiz yapılacak)";
-  }
-
-  // 2. Ask Claude to detect the tech stack
-  const prompt = `Sen bir web teknolojisi tespit uzmanısın. Aşağıdaki bilgileri kullanarak sitenin teknoloji altyapısını tespit et.
-
-URL: ${targetUrl}
-
-HTTP Başlıkları:
-${JSON.stringify(siteHeaders, null, 2)}
-
-HTML (ilk 30KB):
-${siteHtml}
-
-Şunlara bak:
-- <meta name="generator"> tagları
-- Script src'leri (react, vue, angular, next, nuxt, jquery vb.)
-- CSS framework ipuçları (tailwind class'ları, bootstrap sınıfları)
-- X-Powered-By, Server, Via, CF-Ray header'ları
-- _next/, __nuxt/, wp-content/ gibi URL kalıpları
-- CDN sinyalleri (cloudflare, fastly, akamai)
-- CMS/platform ipuçları (WordPress, Shopify, Webflow vb.)
-- Sayfanın en altındaki "Powered by" veya "Built with" ibareleri
-
-SADECE JSON döndür, başka hiçbir şey yazma:
-{
-  "domain": "example.com",
-  "title": "Sayfa başlığı",
-  "frontend": ["React", "Tailwind CSS"],
-  "backend": ["Node.js"],
-  "hosting": ["Cloudflare", "Vercel"],
-  "confidence": 75,
-  "signals": ["X-Powered-By: Express", "_next/ URL paterni", "React script tagi"],
-  "notes": "Kısa Türkçe açıklama — hangi sinyaller tespit edildi"
+// --- URL'i SADECE kok domain'e indirge (path/query/hash at, subdomain'i koru) ---
+function normalizeUrl(input: string): string {
+  let u = input.trim();
+  if (!/^https?:\/\//i.test(u)) u = "https://" + u;
+  const url = new URL(u);
+  const host = url.hostname.replace(/^www\./i, "");
+  return `https://${host}`;
 }
 
-Kurallar:
-- Sadece güçlü kanıt olan teknolojileri ekle
-- confidence: 0-100 arası (kaç net sinyal bulduğuna göre)
-- notes Türkçe olsun
-- Emin olmadığın şeyleri ekleme
-- SADECE JSON döndür, markdown veya açıklama ekleme`;
-
-  const message = await client.messages.create({
-    model: "claude-haiku-4-5-20251001",
-    max_tokens: 1024,
-    messages: [{ role: "user", content: prompt }],
-  });
-
-  const raw = message.content
-    .filter((b) => b.type === "text")
-    .map((b) => (b as { type: "text"; text: string }).text)
-    .join("");
-
-  // Parse JSON — strip markdown fences if present
-  const cleaned = raw.replace(/```json|```/g, "").trim();
-  const match = cleaned.match(/\{[\s\S]*\}/);
-  if (!match) {
-    return NextResponse.json({ error: "Analiz sonucu ayrıştırılamadı" }, { status: 500 });
+function domainOf(normalizedUrl: string): string {
+  try {
+    return new URL(normalizedUrl).hostname.replace(/^www\./i, "");
+  } catch {
+    return normalizedUrl;
   }
+}
 
-  return NextResponse.json(JSON.parse(match[0]));
+function extractSignals(html: string, headers: Headers) {
+  const scripts = [...html.matchAll(/<script[^>]+src=["']([^"']+)["']/gi)].map((m) => m[1]).slice(0, 40);
+  const links = [...html.matchAll(/<link[^>]+href=["']([^"']+)["']/gi)].map((m) => m[1]).slice(0, 20);
+  const metaGenerator = [...html.matchAll(/<meta[^>]+name=["']generator["'][^>]+content=["']([^"']+)["']/gi)].map((m) => m[1]);
+  const titleMatch = html.match(/<title[^>]*>([^<]*)<\/title>/i);
+  const title = titleMatch ? titleMatch[1].trim().slice(0, 120) : "";
+  const interestingHeaders: Record<string, string> = {};
+  ["server", "x-powered-by", "via", "cf-ray", "x-vercel-id", "x-aspnet-version", "x-generator"].forEach((h) => {
+    const v = headers.get(h);
+    if (v) interestingHeaders[h] = v.slice(0, 200);
+  });
+  return { scripts, links, metaGenerator, interestingHeaders, title };
+}
+
+function todayStr(): string {
+  return new Date().toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    const { url } = await req.json();
+    if (!url || typeof url !== "string") {
+      return NextResponse.json({ error: "URL gerekli" }, { status: 400 });
+    }
+
+    // ---- 1) Cihaz limiti kontrolu ----
+    let deviceId = req.cookies.get(COOKIE_NAME)?.value;
+    let isNewDevice = false;
+    if (!deviceId) {
+      deviceId = randomUUID();
+      isNewDevice = true;
+    } else {
+      const { data: usage } = await supabaseAdmin
+        .from("analysis_usage")
+        .select("device_id")
+        .eq("device_id", deviceId)
+        .maybeSingle();
+      if (usage) {
+        return NextResponse.json(
+          { error: "Bu cihazla zaten bir analiz yaptiniz. Demo, cihaz basina 1 analizle sinirli." },
+          { status: 429 }
+        );
+      }
+    }
+
+    const normalizedUrl = normalizeUrl(url);
+    const domain = domainOf(normalizedUrl);
+
+    // ---- 2) Hedef siteyi fetch et ----
+    let html = "";
+    let resHeaders = new Headers();
+    try {
+      const res = await fetch(normalizedUrl, {
+        headers: { "User-Agent": "Mozilla/5.0 (compatible; TechStackAnalyzer/1.0)" },
+        signal: AbortSignal.timeout(15_000),
+      });
+      resHeaders = res.headers;
+      html = (await res.text()).slice(0, HTML_LIMIT);
+    } catch {
+      return NextResponse.json({ error: "Site getirilemedi. URL'i kontrol edin." }, { status: 502 });
+    }
+
+    const htmlHash = createHash("sha256").update(html).digest("hex");
+
+    // ---- 3) Cache kontrolu ----
+    const { data: cached } = await supabaseAdmin
+      .from("analyses")
+      .select("result, html_hash")
+      .eq("url", normalizedUrl)
+      .maybeSingle();
+
+    let result: Record<string, unknown>;
+    let fromCache = false;
+
+    if (cached && cached.html_hash === htmlHash) {
+      // CACHE HIT: Claude'a gidilmez, para harcanmaz, gunluk limit sayilmaz.
+      result = cached.result as Record<string, unknown>;
+      fromCache = true;
+    } else {
+      // ---- 3b) YENI analiz olacak -> once GLOBAL GUNLUK LIMITi kontrol et ----
+      const { data: counterVal, error: counterErr } = await supabaseAdmin.rpc("increment_daily_counter", {
+        p_day: todayStr(),
+      });
+      if (counterErr) {
+        console.error("Sayac hatasi:", counterErr.message);
+        return NextResponse.json({ error: "Sunucu hatasi, tekrar deneyin." }, { status: 500 });
+      }
+      if (typeof counterVal === "number" && counterVal > DAILY_LIMIT) {
+        return NextResponse.json(
+          {
+            error: "Bugunluk analiz kapasitesi doldu. Bu arac API maliyetiyle calisiyor; yarin tekrar deneyebilir ya da destek olabilirsiniz.",
+            limitReached: true,
+          },
+          { status: 429 }
+        );
+      }
+
+      // ---- 4) Claude ile analiz ----
+      const signals = extractSignals(html, resHeaders);
+      const prompt = `Sen bir web teknolojisi tespit uzmanisin. Asagidaki sinyallere dayanarak sitenin teknoloji altyapisini tespit et.
+
+URL: ${normalizedUrl}
+Sayfa basligi: ${signals.title}
+
+HTTP Header'lari: ${JSON.stringify(signals.interestingHeaders)}
+Meta generator: ${JSON.stringify(signals.metaGenerator)}
+Script kaynaklari: ${JSON.stringify(signals.scripts)}
+Link kaynaklari: ${JSON.stringify(signals.links)}
+
+HTML (kisaltilmis):
+${html.slice(0, 20_000)}
+
+SADECE su JSON formatinda yanit ver, baska hicbir sey yazma:
+{
+  "frontend": ["tespit edilen frontend teknolojileri"],
+  "backend": ["backend / sunucu teknolojileri"],
+  "hosting": ["hosting / CDN"],
+  "confidence": 85,
+  "signals": ["tespiti dayandirdigin somut kanitlar"],
+  "notes": "1-2 cumlelik kisa aciklama (Turkce)"
+}
+
+KURALLAR:
+- confidence 0-100 arasi bir SAYI olmali (string degil).
+- Emin olmadigin kategoriyi bos dizi [] birak. Tahmin uydurma.
+- signals dizisine gercekten gordugun kanitlari yaz.`;
+
+      let message;
+      try {
+        message = await client.messages.create({
+          model: MODEL,
+          max_tokens: 1024,
+          messages: [{ role: "user", content: prompt }],
+        });
+      } catch (e: unknown) {
+        // Anthropic kredisi bitti / kimlik hatasi -> sik mesaj
+        const status = (e as { status?: number })?.status;
+        if (status === 400 || status === 401 || status === 429) {
+          return NextResponse.json(
+            {
+              error: "Analiz servisi su an gecici olarak kullanilamiyor. Lutfen daha sonra tekrar deneyin.",
+              serviceDown: true,
+            },
+            { status: 503 }
+          );
+        }
+        throw e;
+      }
+
+      const text = message.content
+        .filter((b) => b.type === "text")
+        .map((b) => (b as { text: string }).text)
+        .join("")
+        .replace(/```json|```/g, "")
+        .trim();
+
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        return NextResponse.json({ error: "Analiz sonucu cozumlenemedi." }, { status: 500 });
+      }
+
+      result = {
+        domain,
+        title: signals.title || undefined,
+        frontend: Array.isArray(parsed.frontend) ? parsed.frontend : [],
+        backend: Array.isArray(parsed.backend) ? parsed.backend : [],
+        hosting: Array.isArray(parsed.hosting) ? parsed.hosting : [],
+        confidence: typeof parsed.confidence === "number" ? parsed.confidence : 0,
+        signals: Array.isArray(parsed.signals) ? parsed.signals : [],
+        notes: typeof parsed.notes === "string" ? parsed.notes : "",
+      };
+
+      await supabaseAdmin.from("analyses").upsert(
+        {
+          url: normalizedUrl,
+          html_hash: htmlHash,
+          result,
+          model: MODEL,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "url" }
+      );
+    }
+
+    // ---- 5) Cihaz hakkini isaretle ----
+    await supabaseAdmin
+      .from("analysis_usage")
+      .upsert({ device_id: deviceId, analyzed_url: normalizedUrl }, { onConflict: "device_id" });
+
+    // ---- 6) Yanit ----
+    const response = NextResponse.json({ ...result, fromCache });
+    if (isNewDevice) {
+      response.cookies.set(COOKIE_NAME, deviceId, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production", // localde false, canlida true
+        sameSite: "lax",
+        maxAge: 60 * 60 * 24 * 365,
+        path: "/",
+      });
+    }
+    return response;
+  } catch (err) {
+    console.error(err);
+    return NextResponse.json({ error: "Beklenmeyen bir hata olustu." }, { status: 500 });
+  }
 }

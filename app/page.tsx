@@ -52,7 +52,14 @@ export default function Home() {
   useEffect(() => {
     try {
       const saved = localStorage.getItem("tsa_history");
-      if (saved) setHistory(JSON.parse(saved));
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        // Eski/bozuk kayıtları (frontend dizisi olmayanları) ayıkla
+        const clean = Array.isArray(parsed)
+          ? parsed.filter((h) => h?.result && Array.isArray(h.result.frontend))
+          : [];
+        setHistory(clean);
+      }
     } catch {}
   }, []);
 
@@ -271,7 +278,7 @@ export default function Home() {
                   <span className={styles.historyDomain}>{item.domain}</span>
                   <span className={styles.historyTime}>{timeAgo(item.analyzedAt)}</span>
                   <span className={styles.historyTechs}>
-                    {[...item.result.frontend, ...item.result.backend, ...item.result.hosting].slice(0, 3).join(" · ")}
+                    {[...(item.result.frontend ?? []), ...(item.result.backend ?? []), ...(item.result.hosting ?? [])].slice(0, 3).join(" · ")}
                   </span>
                 </button>
               ))}
@@ -376,7 +383,21 @@ export default function Home() {
         </div>
       )}
 
-      <footer className={styles.footer}>Claude API &amp; Next.js ile yapılmıştır</footer>
+      <footer className={styles.footer}>
+        <div>Claude API &amp; Next.js ile yapılmıştır</div>
+        <a
+          href={process.env.NEXT_PUBLIC_DONATE_URL || "#"}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{
+            display: "inline-flex", alignItems: "center", gap: 6, marginTop: 10,
+            padding: "6px 14px", borderRadius: 8, fontSize: 13, textDecoration: "none",
+            border: "1px solid #ffffff22", color: "inherit", opacity: 0.85,
+          }}
+          >
+        ❤️ Bu araç API maliyetiyle çalışıyor — destek ol
+        </a>
+      </footer>
     </main>
   );
 }
